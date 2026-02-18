@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # 1. Database (Postgres)
+  db:
+    image: postgres:15-alpine
+    container_name: shield_db
+    environment:
+      POSTGRES_USER: shield_user
+      POSTGRES_PASSWORD: shield_password
+      POSTGRES_DB: shield_procure
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # 2. Backend (FastAPI) - MAPPED TO PORT 8001
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: shield_backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app
+      - ./data/uploads:/app/data/uploads
+    ports:
+      - "8001:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - DATABASE_URL=postgresql://shield_user:shield_password@db:5432/shield_procure
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      - db
+
+  # 3. Frontend (Next.js)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: shield_frontend
+    command: npm run dev
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      # Update API URL to match new backend port
+      - NEXT_PUBLIC_API_URL=http://localhost:8001  # <--- CHANGED HERE
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
