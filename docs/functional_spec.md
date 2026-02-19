@@ -40,6 +40,37 @@ ShieldProcure is a **System of Intelligence** for procurement: a bid management 
 
 ---
 
+## POC v2 — Workflow Release (Implemented)
+
+### 1. Automated vendor extraction (during ingestion)
+
+- On PDF upload, raw text is sent to the LLM; a dedicated extraction prompt returns structured **Vendor** (name, address, website, domain) and **Representatives** (name, email, phone, designation).
+- Backend matches vendor by name or website; if not found, creates **Vendor** and **VendorRep** records and links the **Bid** to the vendor.
+- **Frontend:** Manual "Vendor name" input removed; upload is PDF-only. After upload, a read-only "Extracted vendor (for confirmation)" block shows vendor and reps (with verification icons when available).
+
+### 2. Re-evaluation loop & history
+
+- **Submit for Re-evaluation:** When a reviewer has added human notes or changed human score, they can click "Submit for Re-evaluation". The AI runs again with reviewer notes as context.
+- **BidEvaluationHistory:** Each re-evaluation archives the current ai_score, ai_reasoning, human_score, human_notes into **BidEvaluationHistory** before updating the bid.
+- **View History:** Bid detail includes a "View history" link that opens a modal listing past evaluation versions (scores and timestamps).
+
+### 3. Comparative analysis dashboard
+
+- On **RFP detail**, a **Comparative Analysis** tab shows a matrix of bids that have moved past "Uploaded": rows = vendors, columns = AI score, Human score, Status (and optional requirement-level data). Fetched via `GET /rfps/{id}/comparative`.
+
+### 4. Digital agents (simulated for POC)
+
+- **Website agent:** After vendor extraction, the backend pings the extracted website URL (HTTP HEAD); result stored as `website_verified` (true/false).
+- **Phone agent:** Validates phone number format (E.164 or loose format); result stored as `phone_verified` on each representative.
+- **UI:** "Verified ✓" (green) or "Unreachable ✗" (red) icons next to website and phone in vendor/rep display.
+
+### 5. Locking & immutability
+
+- **Lock Bids for Final Decision:** Bid Manager can click this on the RFP page; it sets **RFP.bids_locked = true** (`PATCH /rfps/{id}/lock`). Once locked, reviewers cannot change notes or trigger re-evaluation.
+- **Final bid state:** When an Approver sets a bid to Approved or Rejected, the bid becomes read-only: "Save review", "Run AI evaluation", and "Submit for Re-evaluation" are disabled. The backend rejects PATCH/POST to modify or re-evaluate such bids.
+
+---
+
 ## Phase 1 POC — Requirements
 
 ### 1. RFP Creation

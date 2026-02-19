@@ -115,9 +115,12 @@ frontend/src/
 
 ## Database Schema (POC)
 
-- **rfps:** id, title, description, requirements, budget, status, created_at, updated_at, closing_date
-- **bids:** id, rfp_id, filename, file_path, extracted_text, vendor_name, status, ai_score, ai_reasoning, ai_evaluation_source, ai_requirements_breakdown (JSON), human_score, human_notes, created_at, updated_at
-- **bid_audit_events:** id, bid_id, action, actor, created_at (actions: created, evaluated, human_review, approved, rejected)
+- **rfps:** id, title, description, requirements, budget, status, **bids_locked**, created_at, updated_at, closing_date
+- **vendors:** id, name, address, website, domain, **website_verified**, created_at, updated_at
+- **vendor_reps:** id, vendor_id, name, email, phone, designation, **phone_verified**, created_at
+- **bids:** id, rfp_id, **vendor_id**, filename, file_path, extracted_text, vendor_name, status, ai_*, human_*, created_at, updated_at
+- **bid_audit_events:** id, bid_id, action, actor, created_at
+- **bid_evaluation_history:** id, bid_id, ai_score, ai_reasoning, human_score, human_notes, created_at (snapshot before re-evaluation)
 
 ---
 
@@ -130,12 +133,15 @@ frontend/src/
 | POST | /rfps | Create RFP |
 | GET | /rfps | List RFPs |
 | GET | /rfps/{id} | Get RFP |
-| POST | /rfps/{id}/bids | Upload bid (PDF + vendor_name) |
+| **PATCH** | **/rfps/{id}/lock** | **Lock bids for final decision** |
+| **GET** | **/rfps/{id}/comparative** | **Comparative analysis (bids past Uploaded)** |
+| POST | /rfps/{id}/bids | Upload bid (PDF only; vendor extracted by AI) |
 | GET | /rfps/{id}/bids | List bids for RFP |
 | GET | /bids | List all bids |
-| GET | /bids/{id} | Get bid (with audit_events) |
+| GET | /bids/{id} | Get bid (with vendor, audit_events, evaluation_history) |
 | POST | /bids/{id}/evaluate | Run AI evaluation |
-| PATCH | /bids/{id} | Update human score/notes |
+| **POST** | **/bids/{id}/re-evaluate** | **Re-evaluate with optional human_notes_context** |
+| PATCH | /bids/{id} | Update human score/notes (rejected if locked/final) |
 | PATCH | /bids/{id}/status | Set status Approved/Rejected |
 
 ---

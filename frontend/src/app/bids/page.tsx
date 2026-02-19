@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRole } from "@/contexts/RoleContext";
 import {
   fetchRFPs,
   fetchAllBids,
   uploadBid,
+  extractVendor,
   type RFPRecord,
   type BidRecord,
 } from "@/lib/api";
@@ -18,11 +19,22 @@ export default function BidsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadPhase, setUploadPhase] = useState<"idle" | "uploading" | "ai_processing">("idle");
+  const [aiElapsedSeconds, setAiElapsedSeconds] = useState(0);
+  const [lastAiDurationSeconds, setLastAiDurationSeconds] = useState<number | null>(null);
+  const aiProcessingStartRef = useRef<number | null>(null);
   const [selectedRfpId, setSelectedRfpId] = useState<number | "">("");
-  const [vendorName, setVendorName] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const isBidManager = currentPersona === "Bid Manager";
+
+  useEffect(() => {
+    if (uploadPhase !== "ai_processing" || aiProcessingStartRef.current == null) return;
+    const interval = setInterval(() => {
+      setAiElapsedSeconds(Math.floor((Date.now() - aiProcessingStartRef.current!) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [uploadPhase]);
 
   const load = async () => {
     setLoading(true);
@@ -47,22 +59,33 @@ export default function BidsPage() {
 
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedFile || !vendorName.trim() || selectedRfpId === "") {
-      setError("Please select an RFP, enter vendor name, and choose a PDF file.");
+    if (!selectedFile || selectedRfpId === "") {
+      setError("Please select an RFP and choose a PDF file. Vendor is extracted from the document.");
       return;
     }
     setUploading(true);
     setError(null);
+    setLastAiDurationSeconds(null);
+    setUploadPhase("uploading");
     try {
-      await uploadBid(Number(selectedRfpId), vendorName.trim(), selectedFile, currentPersona);
-      setSelectedRfpId("");
-      setVendorName("");
+      const created = await uploadBid(Number(selectedRfpId), selectedFile, currentPersona);
       setSelectedFile(null);
+      aiProcessingStartRef.current = Date.now();
+      setAiElapsedSeconds(0);
+      setUploadPhase("ai_processing");
+      await extractVendor(created.id, currentPersona);
+      setLastAiDurationSeconds((Date.now() - aiProcessingStartRef.current!) / 1000);
+      aiProcessingStartRef.current = null;
+      setUploadPhase("idle");
+      setUploading(false);
+      setSelectedRfpId("");
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to upload bid");
+      aiProcessingStartRef.current = null;
     } finally {
       setUploading(false);
+      setUploadPhase("idle");
     }
   };
 
@@ -98,22 +121,7 @@ export default function BidsPage() {
                 ))}
               </select>
             </div>
-            <div>
-              <label
-                htmlFor="bid_vendor"
-                className="block text-sm font-medium text-slate-700"
-              >
-                Vendor name
-              </label>
-              <input
-                id="bid_vendor"
-                type="text"
-                required
-                value={vendorName}
-                onChange={(e) => setVendorName(e.target.value)}
-                className="mt-1 w-full max-w-md rounded-md border border-slate-300 px-3 py-2 text-slate-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-              />
-            </div>
+            <p className="text-sm text-slate-500">Vendor details are extracted from the PDF by AI after upload.</p>
             <div>
               <label
                 htmlFor="bid_file"
@@ -135,8 +143,28 @@ export default function BidsPage() {
               disabled={uploading}
               className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
             >
-              {uploading ? "Uploading…" : "Upload bid"}
+              {uploading
+                ? uploadPhase === "uploading"
+                  ? "Uploading…"
+                  : "Document uploaded. Vendor extraction…"
+                : "Upload bid"}
             </button>
+            {uploading && (
+              <p className="text-sm text-slate-500">
+                {uploadPhase === "uploading" && "Uploading…"}
+                {uploadPhase === "ai_processing" && (
+                  <>Vendor extraction in progress… <span className="font-mono font-medium text-slate-700">{Math.floor(aiElapsedSeconds / 60)}:{(aiElapsedSeconds % 60).toString().padStart(2, "0")}</span></>
+                )}
+              </p>
+            )}
+            {!uploading && lastAiDurationSeconds != null && (
+              <p className="text-sm text-green-700">
+                Vendor extraction complete.
+                {lastAiDurationSeconds >= 1 && (
+                  <span className="ml-1 text-slate-600">Ready in {lastAiDurationSeconds < 60 ? `${Math.round(lastAiDurationSeconds)}s` : `${Math.floor(lastAiDurationSeconds / 60)}m ${Math.round(lastAiDurationSeconds % 60)}s`}.</span>
+                )}
+              </p>
+            )}
           </form>
         </div>
       )}

@@ -1,20 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useRole } from "@/contexts/RoleContext";
 import {
   fetchBidById,
   evaluateBid,
+  reEvaluateBid,
   updateBidHuman,
   updateBidStatus,
   getBidPdfUrl,
   getApiConfig,
+  VENDOR_EXTRACT_PLACEHOLDER,
   type BidDetailRecord,
   type AIProvider,
   type RequirementBreakdownItem,
 } from "@/lib/api";
+
+const FINAL_STATUSES = ["Approved", "Rejected"];
 
 export default function BidDetailPage() {
   const params = useParams();
@@ -24,17 +28,25 @@ export default function BidDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [evaluating, setEvaluating] = useState(false);
+  const [reEvaluating, setReEvaluating] = useState(false);
   const [humanScore, setHumanScore] = useState<string>("");
   const [humanNotes, setHumanNotes] = useState("");
   const [savingHuman, setSavingHuman] = useState(false);
   const [updatingStatus, setUpdatingStatus] = useState(false);
   const [aiProvider, setAiProvider] = useState<AIProvider | null>(null);
   const [rationaleExpanded, setRationaleExpanded] = useState(false);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [evalElapsedSeconds, setEvalElapsedSeconds] = useState(0);
+  const [lastEvalDurationSeconds, setLastEvalDurationSeconds] = useState<number | null>(null);
+  const evalStartRef = useRef<number | null>(null);
 
   const canEditHuman =
     currentPersona === "Reviewer" || currentPersona === "Bid Manager";
   const isApprover = currentPersona === "Approver";
   const canRunAi = !isApprover;
+  const isFinal = bid != null && FINAL_STATUSES.includes(bid.status);
+  const isLocked = Boolean(bid?.rfp?.bids_locked);
+  const canEditOrReEval = canEditHuman && !isFinal && !isLocked;
 
   const load = async () => {
     if (!id || Number.isNaN(id)) {
@@ -68,22 +80,61 @@ export default function BidDetailPage() {
       .catch(() => setAiProvider("mock"));
   }, []);
 
+  const isEvalRunning = evaluating || reEvaluating;
+  useEffect(() => {
+    if (!isEvalRunning || evalStartRef.current == null) return;
+    const interval = setInterval(() => {
+      setEvalElapsedSeconds(Math.floor((Date.now() - evalStartRef.current!) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isEvalRunning]);
+
   const handleRunEvaluation = async () => {
     setEvaluating(true);
     setError(null);
+    setLastEvalDurationSeconds(null);
+    evalStartRef.current = Date.now();
+    setEvalElapsedSeconds(0);
     try {
       const updated = await evaluateBid(id, currentPersona);
       setBid((prev) => (prev ? { ...prev, ...updated } : null));
+      setLastEvalDurationSeconds((Date.now() - evalStartRef.current!) / 1000);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to run evaluation");
     } finally {
       setEvaluating(false);
+      evalStartRef.current = null;
+    }
+  };
+
+  const handleReEvaluate = async () => {
+    setReEvaluating(true);
+    setError(null);
+    setLastEvalDurationSeconds(null);
+    evalStartRef.current = Date.now();
+    setEvalElapsedSeconds(0);
+    try {
+      const updated = await reEvaluateBid(
+        id,
+        { human_notes_context: humanNotes || undefined },
+        currentPersona
+      );
+      setBid((prev) => (prev ? { ...prev, ...updated } : null));
+      setHumanScore(updated.human_score != null ? String(updated.human_score) : "");
+      setHumanNotes(updated.human_notes ?? "");
+      setLastEvalDurationSeconds((Date.now() - evalStartRef.current!) / 1000);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to re-evaluate");
+    } finally {
+      setReEvaluating(false);
+      evalStartRef.current = null;
     }
   };
 
   const handleSaveHuman = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canEditHuman) return;
+    if (!canEditOrReEval) return;
     setSavingHuman(true);
     setError(null);
     try {
@@ -223,7 +274,57 @@ export default function BidDetailPage() {
             <p className="mt-1 text-xs text-slate-500">
               RFP: {bid.rfp.title}
             </p>
+            {(isLocked || isFinal) && (
+              <p className="mt-1 text-xs text-amber-700">
+                {isFinal ? "Bid is in final state; no edits allowed." : "Bids are locked for final decision."}
+              </p>
+            )}
           </div>
+
+          {/* Extracted vendor with verification icons */}
+          {!bid.vendor && bid.vendor_name === VENDOR_EXTRACT_PLACEHOLDER && (
+            <div className="border-b border-slate-200 px-4 py-3">
+              <p className="text-sm text-amber-700">Vendor extraction in progress…</p>
+            </div>
+          )}
+          {bid.vendor && (
+            <div className="border-b border-slate-200 px-4 py-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Vendor details (extracted)</h3>
+              <dl className="mt-2 space-y-2 text-sm">
+                <div><span className="font-medium text-slate-600">Name:</span> {bid.vendor.name}</div>
+                {bid.vendor.address != null && bid.vendor.address !== "" && (
+                  <div><span className="font-medium text-slate-600">Address:</span> {bid.vendor.address}</div>
+                )}
+                {bid.vendor.website != null && bid.vendor.website !== "" && (
+                  <div className="flex items-center gap-1">
+                    <span className="font-medium text-slate-600">Website:</span>
+                    <a href={bid.vendor.website} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">{bid.vendor.website}</a>
+                    {bid.vendor.website_verified === true && <span className="text-green-600" title="Verified">✓</span>}
+                    {bid.vendor.website_verified === false && <span className="text-red-600" title="Unreachable">✗</span>}
+                  </div>
+                )}
+                {bid.vendor.representatives?.length ? (
+                  <div className="mt-2">
+                    <span className="font-medium text-slate-600">Representatives:</span>
+                    <ul className="mt-1 space-y-1.5">
+                      {bid.vendor.representatives.map((r) => (
+                        <li key={r.id} className="rounded border border-slate-100 bg-white px-2 py-1 text-xs">
+                          {r.name != null && r.name !== "" && <><span className="font-medium text-slate-600">Name:</span> {r.name}<br /></>}
+                          {r.email != null && r.email !== "" && <><span className="font-medium text-slate-600">Email:</span> {r.email}<br /></>}
+                          {r.phone != null && r.phone !== "" && (
+                            <><span className="font-medium text-slate-600">Phone:</span> {r.phone}
+                              {r.phone_verified === true && <span className="text-green-600 ml-0.5" title="Verified">✓</span>}
+                              {r.phone_verified === false && <span className="text-red-600 ml-0.5" title="Invalid">✗</span>}
+                            </>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </dl>
+            </div>
+          )}
 
           {error && (
             <div className="mx-4 mt-3 rounded-md bg-red-50 p-2 text-sm text-red-800">
@@ -256,7 +357,7 @@ export default function BidDetailPage() {
                 </span>
               )}
             </div>
-            {evaluating ? (
+            {(evaluating || reEvaluating) ? (
               <div className="mt-3 flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-4">
                 <svg
                   className="h-5 w-5 animate-spin text-indigo-600"
@@ -280,7 +381,7 @@ export default function BidDetailPage() {
                   />
                 </svg>
                 <span className="text-sm text-slate-600">
-                  AI is analyzing compliance…
+                  AI is analyzing compliance… <span className="font-mono font-medium text-slate-700">{Math.floor(evalElapsedSeconds / 60)}:{(evalElapsedSeconds % 60).toString().padStart(2, "0")}</span>
                 </span>
               </div>
             ) : hasAiScore ? (
@@ -291,6 +392,9 @@ export default function BidDetailPage() {
                   </span>
                   <span className="text-slate-500">/ 100</span>
                 </div>
+                {lastEvalDurationSeconds != null && (
+                  <p className="text-xs text-slate-600">Evaluation took {lastEvalDurationSeconds < 1 ? "<1s" : lastEvalDurationSeconds < 60 ? `${lastEvalDurationSeconds.toFixed(1)}s` : `${Math.floor(lastEvalDurationSeconds / 60)}m ${(lastEvalDurationSeconds % 60).toFixed(0)}s`}.</p>
+                )}
                 <p className="text-xs text-slate-500">
                   Evaluation: {evaluationSource === "ollama" ? (
                     <span className="font-medium text-emerald-700">Ollama (live)</span>
@@ -306,17 +410,42 @@ export default function BidDetailPage() {
                   </p>
                 )}
               </div>
-            ) : canRunAi ? (
+            ) : canRunAi && !isLocked && !isFinal ? (
               <div className="mt-3">
                 <button
                   type="button"
                   onClick={handleRunEvaluation}
-                  className="w-full rounded-lg border-2 border-dashed border-indigo-300 bg-indigo-50/50 py-8 text-center text-sm font-medium text-indigo-700 transition hover:border-indigo-400 hover:bg-indigo-50"
+                  disabled={evaluating || reEvaluating}
+                  className="w-full rounded-lg border-2 border-dashed border-indigo-300 bg-indigo-50/50 py-8 text-center text-sm font-medium text-indigo-700 transition hover:border-indigo-400 hover:bg-indigo-50 disabled:opacity-50"
                 >
-                  Run AI evaluation
+                  {(evaluating || reEvaluating) ? "Evaluating…" : "Run AI evaluation"}
                 </button>
               </div>
             ) : null}
+            {hasAiScore && (bid.evaluation_history?.length ?? 0) > 0 && (
+              <div className="mt-2">
+                <button
+                  type="button"
+                  onClick={() => setHistoryModalOpen(true)}
+                  className="text-xs font-medium text-indigo-600 hover:text-indigo-800"
+                >
+                  View history ({bid.evaluation_history!.length})
+                </button>
+              </div>
+            )}
+            {hasAiScore && canEditOrReEval && (
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={handleReEvaluate}
+                  disabled={reEvaluating}
+                  className="w-full rounded-lg border border-amber-300 bg-amber-50 py-2.5 text-sm font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                >
+                  {reEvaluating ? "Re-evaluating…" : "Submit for Re-evaluation"}
+                </button>
+                <p className="mt-1 text-xs text-slate-500">Current human notes will be sent as context to the AI.</p>
+              </div>
+            )}
 
             {/* Scorer dashboard: rationale mapped to requirements (collapsed by default) */}
             {hasAiScore && requirementsBreakdown.length > 0 && (
@@ -387,7 +516,7 @@ export default function BidDetailPage() {
                   <button
                     type="button"
                     onClick={handleApprove}
-                    disabled={updatingStatus || bid.status === "Approved"}
+                    disabled={updatingStatus || bid.status === "Approved" || isFinal}
                     className="flex-1 rounded-lg bg-green-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
                   >
                     {updatingStatus ? "…" : "Approve bid"}
@@ -395,7 +524,7 @@ export default function BidDetailPage() {
                   <button
                     type="button"
                     onClick={handleReject}
-                    disabled={updatingStatus || bid.status === "Rejected"}
+                    disabled={updatingStatus || bid.status === "Rejected" || isFinal}
                     className="flex-1 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
                   >
                     {updatingStatus ? "…" : "Reject bid"}
@@ -430,7 +559,7 @@ export default function BidDetailPage() {
                   step="0.5"
                   value={humanScore}
                   onChange={(e) => setHumanScore(e.target.value)}
-                  disabled={!canEditHuman}
+                  disabled={!canEditOrReEval}
                   className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-slate-900 shadow-sm disabled:bg-slate-100 disabled:text-slate-500"
                 />
               </div>
@@ -446,11 +575,11 @@ export default function BidDetailPage() {
                   rows={4}
                   value={humanNotes}
                   onChange={(e) => setHumanNotes(e.target.value)}
-                  disabled={!canEditHuman}
+                  disabled={!canEditOrReEval}
                   className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm disabled:bg-slate-100 disabled:text-slate-500"
                 />
               </div>
-              {canEditHuman && (
+              {canEditOrReEval && (
                 <button
                   type="submit"
                   disabled={savingHuman}
@@ -459,11 +588,15 @@ export default function BidDetailPage() {
                   {savingHuman ? "Saving…" : "Save review"}
                 </button>
               )}
-              {!canEditHuman && (
+              {!canEditOrReEval && (canEditHuman ? (
+                <p className="text-xs text-slate-500">
+                  Bids are locked or bid is in final state; edits disabled.
+                </p>
+              ) : (
                 <p className="text-xs text-slate-500">
                   Switch to Reviewer or Bid Manager to edit.
                 </p>
-              )}
+              ))}
             </form>
 
             {/* Audit trail (for Auditors and all roles) */}
@@ -507,6 +640,31 @@ export default function BidDetailPage() {
                 </ul>
               )}
             </div>
+
+            {/* Evaluation history modal */}
+            {historyModalOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setHistoryModalOpen(false)}>
+                <div className="max-h-[80vh] w-full max-w-lg overflow-auto rounded-lg bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+                  <h3 className="text-lg font-semibold text-slate-900">Evaluation history</h3>
+                  <p className="mt-1 text-sm text-slate-500">Previous scores before re-evaluation.</p>
+                  {(!bid.evaluation_history || bid.evaluation_history.length === 0) ? (
+                    <p className="mt-4 text-sm text-slate-500">No history yet.</p>
+                  ) : (
+                    <ul className="mt-4 space-y-4">
+                      {bid.evaluation_history.map((h, i) => (
+                        <li key={h.id} className="rounded border border-slate-200 p-3 text-sm">
+                          <div className="font-medium text-slate-700">Version {bid.evaluation_history!.length - i}</div>
+                          <div className="mt-1 text-slate-600">AI: {h.ai_score != null ? Number(h.ai_score).toFixed(1) : "—"} · Human: {h.human_score != null ? Number(h.human_score).toFixed(1) : "—"}</div>
+                          {h.created_at && <div className="mt-1 text-xs text-slate-400">{new Date(h.created_at).toLocaleString()}</div>}
+                          {h.ai_reasoning && <p className="mt-2 text-xs text-slate-500 line-clamp-2">{h.ai_reasoning}</p>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <button type="button" onClick={() => setHistoryModalOpen(false)} className="mt-4 rounded-md bg-slate-200 px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-300">Close</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

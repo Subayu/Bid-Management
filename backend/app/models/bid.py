@@ -10,10 +10,13 @@ class Bid(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     rfp_id = Column(Integer, ForeignKey("rfps.id"), nullable=False, index=True)
+    vendor_id = Column(Integer, ForeignKey("vendors.id"), nullable=True, index=True)
     filename = Column(String(255), nullable=False)
     file_path = Column(String(512), nullable=False)
     extracted_text = Column(Text)
-    vendor_name = Column(String(255), nullable=False)
+    text_chunks = Column(Text, nullable=True)  # JSON array of chunks from upload, reused at evaluation
+    evaluation_summary = Column(Text, nullable=True)  # short summary from upload, used for faster evaluation
+    vendor_name = Column(String(255), nullable=False)  # denormalized from Vendor.name for display
     status = Column(String(50), default="Uploaded", nullable=False)
     ai_score = Column(Float, nullable=True)
     ai_reasoning = Column(Text, nullable=True)
@@ -25,4 +28,8 @@ class Bid(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     rfp = relationship("RFP", back_populates="bids")
+    vendor = relationship("Vendor", back_populates="bids")
     audit_events = relationship("BidAuditEvent", back_populates="bid", order_by="BidAuditEvent.created_at")
+    evaluation_history = relationship(
+        "BidEvaluationHistory", back_populates="bid", order_by="BidEvaluationHistory.created_at"
+    )

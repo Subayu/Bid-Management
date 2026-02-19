@@ -33,6 +33,7 @@ export interface RFPRecord {
   requirements: string;
   budget: number | null;
   status: string;
+  bids_locked?: boolean;
   created_at: string | null;
   updated_at: string | null;
   closing_date: string | null;
@@ -70,6 +71,21 @@ export async function fetchRFP(id: number): Promise<RFPRecord> {
   return res.json();
 }
 
+export async function lockRfpBids(rfpId: number): Promise<RFPRecord> {
+  const res = await fetch(`${API_BASE}/rfps/${rfpId}/lock`, { method: "PATCH" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to lock bids");
+  }
+  return res.json();
+}
+
+export async function fetchComparativeAnalysis(rfpId: number): Promise<ComparativeBidRow[]> {
+  const res = await fetch(`${API_BASE}/rfps/${rfpId}/comparative`);
+  if (!res.ok) throw new Error("Failed to fetch comparative analysis");
+  return res.json();
+}
+
 // --- Bid types and API ---
 /** One requirement from the AI evaluation breakdown */
 export interface RequirementBreakdownItem {
@@ -100,6 +116,7 @@ export interface RFPRef {
   id: number;
   title: string;
   requirements: string | null;
+  bids_locked?: boolean;
 }
 
 export interface BidAuditEventRecord {
@@ -110,9 +127,50 @@ export interface BidAuditEventRecord {
   created_at: string | null;
 }
 
+export interface VendorRepRecord {
+  id: number;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  designation: string | null;
+  phone_verified: boolean | null;
+}
+
+export interface VendorRecord {
+  id: number;
+  name: string;
+  address: string | null;
+  website: string | null;
+  domain: string | null;
+  website_verified: boolean | null;
+  representatives: VendorRepRecord[];
+}
+
+export interface BidEvaluationHistoryRecord {
+  id: number;
+  bid_id: number;
+  ai_score: number | null;
+  ai_reasoning: string | null;
+  human_score: number | null;
+  human_notes: string | null;
+  created_at: string | null;
+}
+
 export interface BidDetailRecord extends BidRecord {
   rfp: RFPRef;
+  vendor?: VendorRecord | null;
   audit_events: BidAuditEventRecord[];
+  evaluation_history?: BidEvaluationHistoryRecord[];
+}
+
+export interface ComparativeBidRow {
+  bid_id: number;
+  vendor_name: string;
+  filename: string;
+  ai_score: number | null;
+  human_score: number | null;
+  status: string;
+  requirements_breakdown: RequirementBreakdownItem[] | null;
 }
 
 export async function fetchBids(rfpId: number): Promise<BidRecord[]> {
@@ -128,7 +186,7 @@ export async function fetchAllBids(): Promise<BidRecord[]> {
 }
 
 export async function fetchBidById(id: number): Promise<BidDetailRecord> {
-  const res = await fetch(`${API_BASE}/bids/${id}`);
+  const res = await fetch(`${API_BASE}/bids/${id}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch bid");
   return res.json();
 }
@@ -143,6 +201,25 @@ export async function evaluateBid(id: number, persona?: string): Promise<BidReco
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to evaluate bid");
+  }
+  return res.json();
+}
+
+export async function reEvaluateBid(
+  id: number,
+  body?: { human_notes_context?: string | null },
+  persona?: string
+): Promise<BidRecord> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (persona) headers["X-Persona"] = persona;
+  const res = await fetch(`${API_BASE}/bids/${id}/re-evaluate`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to re-evaluate bid");
   }
   return res.json();
 }
@@ -193,14 +270,13 @@ export function getBidPdfUrl(filePath: string): string {
   return `${API_BASE}/static/${name}`;
 }
 
+/** Phase 1: Upload bid PDF (save + OCR only). Then call extractVendor for AI processing. */
 export async function uploadBid(
   rfpId: number,
-  vendorName: string,
   file: File,
   actor?: string
 ): Promise<BidRecord> {
   const form = new FormData();
-  form.append("vendor_name", vendorName);
   form.append("file", file);
   if (actor) form.append("actor", actor);
   const res = await fetch(`${API_BASE}/rfps/${rfpId}/bids`, {
@@ -210,6 +286,27 @@ export async function uploadBid(
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to upload bid");
+  }
+  return res.json();
+}
+
+/** Placeholder shown on new bids until vendor extraction completes. */
+export const VENDOR_EXTRACT_PLACEHOLDER = "Processing…";
+
+/**
+ * Run vendor extraction on the bid (sync on server). Returns when done.
+ * Backend returns small JSON so the request completes quickly after extraction.
+ */
+export async function extractVendor(bidId: number, actor?: string): Promise<{ status: string; bid_id: number; vendor_name: string }> {
+  const form = new FormData();
+  if (actor) form.append("actor", actor);
+  const res = await fetch(`${API_BASE}/bids/${bidId}/extract-vendor`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to extract vendor");
   }
   return res.json();
 }

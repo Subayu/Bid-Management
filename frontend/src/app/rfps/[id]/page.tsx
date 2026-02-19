@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useRole } from "@/contexts/RoleContext";
@@ -8,9 +8,17 @@ import {
   fetchRFP,
   fetchBids,
   uploadBid,
+  extractVendor,
+  fetchBidById,
+  lockRfpBids,
+  fetchComparativeAnalysis,
   type RFPRecord,
   type BidRecord,
+  type BidDetailRecord,
+  type ComparativeBidRow,
 } from "@/lib/api";
+
+type Tab = "bids" | "comparative";
 
 export default function RFPDetailPage() {
   const params = useParams();
@@ -18,13 +26,29 @@ export default function RFPDetailPage() {
   const { currentPersona } = useRole();
   const [rfp, setRfp] = useState<RFPRecord | null>(null);
   const [bids, setBids] = useState<BidRecord[]>([]);
+  const [comparative, setComparative] = useState<ComparativeBidRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [vendorName, setVendorName] = useState("");
+  const [lastUploadedBid, setLastUploadedBid] = useState<BidDetailRecord | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [tab, setTab] = useState<Tab>("bids");
+  const [locking, setLocking] = useState(false);
+  const [uploadPhase, setUploadPhase] = useState<"idle" | "uploading" | "ai_processing" | "done">("idle");
+  const [aiElapsedSeconds, setAiElapsedSeconds] = useState(0);
+  const [lastAiDurationSeconds, setLastAiDurationSeconds] = useState<number | null>(null);
+  const aiProcessingStartRef = useRef<number | null>(null);
 
   const isBidManager = currentPersona === "Bid Manager";
+
+  // Live timer during AI processing
+  useEffect(() => {
+    if (uploadPhase !== "ai_processing" || aiProcessingStartRef.current == null) return;
+    const interval = setInterval(() => {
+      setAiElapsedSeconds(Math.floor((Date.now() - aiProcessingStartRef.current!) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [uploadPhase]);
 
   const load = async () => {
     if (!id || Number.isNaN(id)) {
@@ -41,6 +65,10 @@ export default function RFPDetailPage() {
       ]);
       setRfp(rfpData);
       setBids(bidsData);
+      if (tab === "comparative") {
+        const comp = await fetchComparativeAnalysis(id);
+        setComparative(comp);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
     } finally {
@@ -52,23 +80,57 @@ export default function RFPDetailPage() {
     load();
   }, [id]);
 
+  useEffect(() => {
+    if (tab === "comparative" && id && !Number.isNaN(id)) {
+      fetchComparativeAnalysis(id).then(setComparative).catch(() => setComparative([]));
+    }
+  }, [tab, id]);
+
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedFile || !vendorName.trim()) {
-      setError("Vendor name and a PDF file are required.");
+    if (!selectedFile) {
+      setError("Please select a PDF file.");
       return;
     }
     setUploading(true);
     setError(null);
+    setLastUploadedBid(null);
+    setLastAiDurationSeconds(null);
+    setUploadPhase("uploading");
     try {
-      await uploadBid(id, vendorName.trim(), selectedFile, currentPersona);
-      setVendorName("");
+      const created = await uploadBid(id, selectedFile, currentPersona);
       setSelectedFile(null);
+      aiProcessingStartRef.current = Date.now();
+      setAiElapsedSeconds(0);
+      setUploadPhase("ai_processing");
+      await extractVendor(created.id, currentPersona);
+      setLastAiDurationSeconds((Date.now() - aiProcessingStartRef.current) / 1000);
+      aiProcessingStartRef.current = null;
+      setUploadPhase("done");
+      setUploading(false);
+      const full = await fetchBidById(created.id);
+      setLastUploadedBid(full);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to upload bid");
+      setUploadPhase("idle");
+      aiProcessingStartRef.current = null;
     } finally {
       setUploading(false);
+    }
+  };
+
+  const handleLockBids = async () => {
+    if (!id) return;
+    setLocking(true);
+    setError(null);
+    try {
+      const updated = await lockRfpBids(id);
+      setRfp(updated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to lock bids");
+    } finally {
+      setLocking(false);
     }
   };
 
@@ -104,10 +166,23 @@ export default function RFPDetailPage() {
             </p>
           </div>
         )}
-        <div className="mt-4 flex gap-4 text-sm text-slate-500">
+        <div className="mt-4 flex flex-wrap items-center gap-4 text-sm text-slate-500">
           <span className="rounded bg-slate-100 px-2 py-1">{rfp.status}</span>
           {rfp.budget != null && (
             <span>Budget: ${Number(rfp.budget).toLocaleString()}</span>
+          )}
+          {rfp.bids_locked && (
+            <span className="rounded bg-amber-100 px-2 py-1 text-amber-800">Bids locked</span>
+          )}
+          {isBidManager && !rfp.bids_locked && (
+            <button
+              type="button"
+              onClick={handleLockBids}
+              disabled={locking}
+              className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+            >
+              {locking ? "Locking…" : "Lock Bids for Final Decision"}
+            </button>
           )}
         </div>
       </div>
@@ -118,26 +193,11 @@ export default function RFPDetailPage() {
         </div>
       )}
 
-      {isBidManager && (
+      {isBidManager && !rfp.bids_locked && (
         <div className="mt-8 rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-slate-900">Upload Bid (Vendor)</h2>
+          <h2 className="text-lg font-semibold text-slate-900">Upload Bid</h2>
+          <p className="mt-1 text-sm text-slate-500">Vendor details are extracted from the PDF by AI after upload.</p>
           <form onSubmit={handleUpload} className="mt-4 space-y-4">
-            <div>
-              <label
-                htmlFor="vendor_name"
-                className="block text-sm font-medium text-slate-700"
-              >
-                Vendor Name
-              </label>
-              <input
-                id="vendor_name"
-                type="text"
-                required
-                value={vendorName}
-                onChange={(e) => setVendorName(e.target.value)}
-                className="mt-1 w-full max-w-md rounded-md border border-slate-300 px-3 py-2 text-slate-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-              />
-            </div>
             <div>
               <label
                 htmlFor="bid_file"
@@ -159,21 +219,97 @@ export default function RFPDetailPage() {
               disabled={uploading}
               className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
             >
-              {uploading ? "Uploading…" : "Upload Bid"}
+              {uploading
+                ? uploadPhase === "uploading"
+                  ? "Uploading…"
+                  : uploadPhase === "ai_processing"
+                    ? "Document uploaded. Vendor extraction…"
+                    : "Processing…"
+                : "Upload Bid"}
             </button>
+            {uploading && (
+              <p className="text-sm text-slate-500">
+                {uploadPhase === "uploading" && "Uploading…"}
+                {uploadPhase === "ai_processing" && (
+                  <>Vendor extraction in progress… <span className="font-mono font-medium text-slate-700">{Math.floor(aiElapsedSeconds / 60)}:{(aiElapsedSeconds % 60).toString().padStart(2, "0")}</span></>
+                )}
+              </p>
+            )}
+            {uploadPhase === "done" && lastUploadedBid && (
+              <p className="text-sm font-medium text-green-700">
+                Uploaded – vendor extracted.
+                {lastAiDurationSeconds != null && lastAiDurationSeconds >= 1 && (
+                  <span className="ml-1 text-slate-600 font-normal">(Ready in {lastAiDurationSeconds < 60 ? `${Math.round(lastAiDurationSeconds)}s` : `${Math.floor(lastAiDurationSeconds / 60)}m ${Math.round(lastAiDurationSeconds % 60)}s`})</span>
+                )}
+              </p>
+            )}
           </form>
+          {lastUploadedBid?.vendor && (
+            <div className="mt-6 rounded-md border border-slate-200 bg-slate-50 p-4">
+              <h3 className="text-sm font-semibold text-slate-700">Extracted vendor (for confirmation)</h3>
+              <dl className="mt-2 space-y-2 text-sm">
+                <div><span className="font-medium text-slate-600">Name:</span> {lastUploadedBid.vendor.name}</div>
+                {lastUploadedBid.vendor.address != null && lastUploadedBid.vendor.address !== "" && (
+                  <div><span className="font-medium text-slate-600">Address:</span> {lastUploadedBid.vendor.address}</div>
+                )}
+                {lastUploadedBid.vendor.website != null && lastUploadedBid.vendor.website !== "" && (
+                  <div className="flex items-center gap-1">
+                    <span className="font-medium text-slate-600">Website:</span>
+                    <a href={lastUploadedBid.vendor.website} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">{lastUploadedBid.vendor.website}</a>
+                    {lastUploadedBid.vendor.website_verified === true && <span className="text-green-600" title="Verified">✓</span>}
+                    {lastUploadedBid.vendor.website_verified === false && <span className="text-red-600" title="Unreachable">✗</span>}
+                  </div>
+                )}
+                {lastUploadedBid.vendor.representatives?.length ? (
+                  <div className="mt-2">
+                    <span className="font-medium text-slate-600">Representatives:</span>
+                    <ul className="mt-1 list-inside list-disc space-y-1">
+                      {lastUploadedBid.vendor.representatives.map((r) => (
+                        <li key={r.id}>
+                          <span className="font-medium text-slate-600">Name:</span> {r.name || "—"}
+                          {r.designation != null && r.designation !== "" && <><span className="font-medium text-slate-600"> Designation:</span> {r.designation}</>}
+                          {r.email != null && r.email !== "" && <><span className="font-medium text-slate-600"> Email:</span> {r.email}</>}
+                          {r.phone != null && r.phone !== "" && (
+                            <><span className="font-medium text-slate-600"> Phone:</span> {r.phone}
+                              {r.phone_verified === true && <span className="text-green-600 ml-0.5" title="Verified">✓</span>}
+                              {r.phone_verified === false && <span className="text-red-600 ml-0.5" title="Invalid">✗</span>}
+                            </>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </dl>
+            </div>
+          )}
         </div>
       )}
 
       <div className="mt-8 rounded-lg border border-slate-200 bg-white shadow-sm">
-        <h2 className="border-b border-slate-200 px-6 py-3 text-lg font-semibold text-slate-900">
-          Bids ({bids.length})
-        </h2>
-        {bids.length === 0 ? (
-          <p className="p-6 text-slate-600">No bids yet.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-slate-200">
+        <div className="flex border-b border-slate-200">
+          <button
+            type="button"
+            onClick={() => setTab("bids")}
+            className={`px-6 py-3 text-sm font-medium ${tab === "bids" ? "border-b-2 border-indigo-600 text-indigo-600" : "text-slate-500 hover:text-slate-700"}`}
+          >
+            Bids ({bids.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("comparative")}
+            className={`px-6 py-3 text-sm font-medium ${tab === "comparative" ? "border-b-2 border-indigo-600 text-indigo-600" : "text-slate-500 hover:text-slate-700"}`}
+          >
+            Comparative Analysis
+          </button>
+        </div>
+        {tab === "bids" && (
+          <>
+            {bids.length === 0 ? (
+              <p className="p-6 text-slate-600">No bids yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-slate-200">
               <thead className="bg-slate-50">
                 <tr>
                   <th className="px-6 py-2 text-left text-xs font-medium uppercase text-slate-500">
@@ -243,6 +379,48 @@ export default function RFPDetailPage() {
               </tbody>
             </table>
           </div>
+        )}
+          </>
+        )}
+        {tab === "comparative" && (
+          <>
+            {comparative.length === 0 ? (
+              <p className="p-6 text-slate-600">No evaluated bids yet. Run AI evaluation on bids to see comparative analysis.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-slate-200">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="px-6 py-2 text-left text-xs font-medium uppercase text-slate-500">Vendor</th>
+                      <th className="px-6 py-2 text-left text-xs font-medium uppercase text-slate-500">Filename</th>
+                      <th className="px-6 py-2 text-left text-xs font-medium uppercase text-slate-500">AI Score</th>
+                      <th className="px-6 py-2 text-left text-xs font-medium uppercase text-slate-500">Human Score</th>
+                      <th className="px-6 py-2 text-left text-xs font-medium uppercase text-slate-500">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 bg-white">
+                    {comparative.map((row) => (
+                      <tr key={row.bid_id}>
+                        <td className="whitespace-nowrap px-6 py-3 text-sm text-slate-900">
+                          <Link href={`/bids/${row.bid_id}`} className="font-medium text-indigo-600 hover:text-indigo-800">
+                            {row.vendor_name}
+                          </Link>
+                        </td>
+                        <td className="px-6 py-3 text-sm text-slate-600">{row.filename}</td>
+                        <td className="whitespace-nowrap px-6 py-3 text-sm text-slate-700">{row.ai_score != null ? Number(row.ai_score).toFixed(1) : "—"}</td>
+                        <td className="whitespace-nowrap px-6 py-3 text-sm text-slate-700">{row.human_score != null ? Number(row.human_score).toFixed(1) : "—"}</td>
+                        <td className="px-6 py-3 text-sm">
+                          <span className={`rounded px-2 py-0.5 text-xs font-medium ${
+                            row.status === "Approved" ? "bg-green-100 text-green-800" : row.status === "Rejected" ? "bg-red-100 text-red-800" : "bg-indigo-100 text-indigo-800"
+                          }`}>{row.status}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
