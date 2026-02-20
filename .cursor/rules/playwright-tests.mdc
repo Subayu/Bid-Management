@@ -1,0 +1,16 @@
+---
+description: When fixing or writing Playwright E2E tests, apply lessons from docs/PLAYWRIGHT_LESSONS.md to avoid strict mode, flakiness, and wrong waits.
+globs: ["**/tests/**/*.spec.ts", "**/e2e/**/*.ts", "**/playwright.config.ts"]
+---
+
+# Playwright E2E tests
+
+When working on Playwright tests or debugging failures:
+
+1. **Check docs/PLAYWRIGHT_LESSONS.md** for patterns that fixed past issues (strict mode, scoping to main, waiting for completion not "in progress", exact/regex locators, detached elements, timeouts).
+
+2. **Strict mode:** If a locator resolves to 2+ elements, narrow it (e.g. scope to `main`) or use `.first()` (or `.nth(n)`) so actions and assertions target one element. Do not change working tests in other cases (TC1, TC2, TC3) when fixing one (e.g. TC4).
+
+3. **Waits:** For async flows (upload, AI processing), wait for the **completion** state (e.g. "Uploaded – vendor extracted.") with a sufficient timeout (e.g. 150s), not only an "in progress" message.
+
+4. **Minimal edits:** Fix only the failing test or locator; leave passing tests and their locators unchanged unless the user asks for a broader change.
