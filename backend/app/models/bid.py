@@ -16,6 +16,7 @@ class Bid(Base):
     extracted_text = Column(Text)
     text_chunks = Column(Text, nullable=True)  # JSON array of chunks from upload, reused at evaluation
     evaluation_summary = Column(Text, nullable=True)  # short summary from upload, used for faster evaluation
+    bid_extraction_details = Column(Text, nullable=True)  # JSON: quoted_price, currency, rate, rate_unit, validity_period, notes
     vendor_name = Column(String(255), nullable=False)  # denormalized from Vendor.name for display
     status = Column(String(50), default="Uploaded", nullable=False)
     ai_score = Column(Float, nullable=True)

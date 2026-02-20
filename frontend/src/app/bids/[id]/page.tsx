@@ -222,9 +222,18 @@ export default function BidDetailPage() {
     setError(null);
     try {
       const data = await extractVendor(id, currentPersona);
-      if (data.vendor) {
-        setBid((prev) => (prev ? { ...prev, vendor: data.vendor, vendor_name: data.vendor_name } : null));
-      } else {
+      if (data.vendor || data.bid_extraction_details != null) {
+        setBid((prev) =>
+          prev
+            ? {
+                ...prev,
+                ...(data.vendor && { vendor: data.vendor, vendor_name: data.vendor_name }),
+                ...(data.bid_extraction_details != null && { bid_extraction_details: data.bid_extraction_details }),
+              }
+            : null
+        );
+      }
+      if (!data.vendor) {
         const full = await fetchBidById(id);
         setBid(full);
       }
@@ -404,6 +413,53 @@ export default function BidDetailPage() {
               </dl>
             )}
           </div>
+
+          {/* Bid extraction (proposed commercial terms) - from same extraction as vendor, do not change vendor section above */}
+          {(() => {
+            type CommercialTerms = {
+              quoted_price?: number | null;
+              currency?: string | null;
+              rate?: number | null;
+              rate_unit?: string | null;
+              validity_period?: string | null;
+              notes?: string | null;
+            };
+            let commercial: CommercialTerms | null = null;
+            try {
+              if (bid.bid_extraction_details) commercial = JSON.parse(bid.bid_extraction_details) as CommercialTerms;
+            } catch {
+              commercial = null;
+            }
+            const hasCommercial =
+              commercial &&
+              (commercial.quoted_price != null ||
+                (commercial.currency != null && commercial.currency !== "") ||
+                commercial.rate != null ||
+                (commercial.rate_unit != null && commercial.rate_unit !== "") ||
+                (commercial.validity_period != null && commercial.validity_period !== "") ||
+                (commercial.notes != null && commercial.notes !== ""));
+            if (!hasCommercial || !commercial) return null;
+            const c = commercial;
+            return (
+              <div className="border-b border-slate-200 px-4 py-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Bid extraction (proposed terms)</h3>
+                <dl className="mt-2 space-y-1.5 text-sm text-slate-700">
+                  {c.quoted_price != null && (
+                    <div><span className="font-medium text-slate-600">Quoted price:</span> {c.currency ? `${c.currency} ` : ""}{Number(c.quoted_price).toLocaleString()}</div>
+                  )}
+                  {c.rate != null && (
+                    <div><span className="font-medium text-slate-600">Rate:</span> {c.currency ? `${c.currency} ` : ""}{Number(c.rate).toLocaleString()}{c.rate_unit ? ` ${c.rate_unit}` : ""}</div>
+                  )}
+                  {c.validity_period != null && c.validity_period !== "" && (
+                    <div><span className="font-medium text-slate-600">Validity:</span> {c.validity_period}</div>
+                  )}
+                  {c.notes != null && c.notes !== "" && (
+                    <div><span className="font-medium text-slate-600">Notes:</span> <span className="text-slate-600">{c.notes}</span></div>
+                  )}
+                </dl>
+              </div>
+            );
+          })()}
 
           <div className="flex-1 px-4 py-4">
             <div className="flex items-center justify-between gap-2">

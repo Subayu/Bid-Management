@@ -106,6 +106,7 @@ export interface BidRecord {
   ai_reasoning: string | null;
   ai_evaluation_source: string | null;
   last_eval_duration_seconds: number | null;
+  bid_extraction_details: string | null; // JSON: quoted_price, currency, rate, rate_unit, validity_period, notes
   ai_requirements_breakdown: string | null;
   ai_annotations: string | null;
   human_score: number | null;
@@ -328,7 +329,7 @@ export const VENDOR_EXTRACT_PLACEHOLDER = "Processing…";
 export async function extractVendor(
   bidId: number,
   actor?: string
-): Promise<{ status: string; bid_id: number; vendor_name: string; vendor?: VendorRecord | null }> {
+): Promise<{ status: string; bid_id: number; vendor_name: string; vendor?: VendorRecord | null; bid_extraction_details?: string | null }> {
   const form = new FormData();
   if (actor) form.append("actor", actor);
   const res = await fetch(`${API_BASE}/bids/${bidId}/extract-vendor`, {

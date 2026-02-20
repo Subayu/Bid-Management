@@ -168,6 +168,9 @@ async def extract_vendor(
     vendor, reps = _find_or_create_vendor(db, extraction)
     bid.vendor_id = vendor.id
     bid.vendor_name = vendor.name
+    commercial = extraction.get("commercial")
+    if isinstance(commercial, dict) and commercial:
+        bid.bid_extraction_details = json.dumps(commercial)
     db.commit()
     db.refresh(vendor)
     # Reload vendor with reps for response (relationship may not be loaded)
@@ -185,7 +188,13 @@ async def extract_vendor(
         representatives=[VendorRepResponse.model_validate(r) for r in reps],
     )
     logger.info("extract-vendor: bid_id=%s, done vendor_name=%s", bid_id, vendor.name)
-    return {"status": "ok", "bid_id": bid_id, "vendor_name": vendor.name, "vendor": vendor_data}
+    return {
+        "status": "ok",
+        "bid_id": bid_id,
+        "vendor_name": vendor.name,
+        "vendor": vendor_data,
+        "bid_extraction_details": getattr(bid, "bid_extraction_details", None),
+    }
 
 
 @router.get("/rfps/{rfp_id}/bids", response_model=list[BidResponse])
@@ -245,6 +254,7 @@ def get_bid(bid_id: int, response: Response, db: Session = Depends(get_db)):
         ai_reasoning=bid.ai_reasoning,
         ai_evaluation_source=bid.ai_evaluation_source,
         last_eval_duration_seconds=getattr(bid, "last_eval_duration_seconds", None),
+        bid_extraction_details=getattr(bid, "bid_extraction_details", None),
         ai_requirements_breakdown=bid.ai_requirements_breakdown,
         ai_annotations=getattr(bid, "ai_annotations", None),
         human_score=bid.human_score,

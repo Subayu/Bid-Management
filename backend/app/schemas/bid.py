@@ -38,6 +38,7 @@ class BidResponse(BidBase):
     ai_reasoning: Optional[str] = None
     ai_evaluation_source: Optional[str] = None
     last_eval_duration_seconds: Optional[float] = None
+    bid_extraction_details: Optional[str] = None  # JSON: commercial terms from extraction
     ai_requirements_breakdown: Optional[str] = None  # JSON string
     ai_annotations: Optional[str] = None  # JSON array of annotations (quote, reason, reviewer_notes)
     human_score: Optional[float] = None

@@ -235,6 +235,14 @@ def _mock_extract_vendor(bid_text: str) -> dict[str, Any]:
             {"name": "Contact Person", "email": None, "phone": None, "designation": "Representative"},
         ],
         "bid_summary": "Bid document submitted for evaluation. Details available in full text." if bid_text else None,
+        "commercial": {
+            "quoted_price": None,
+            "currency": None,
+            "rate": None,
+            "rate_unit": None,
+            "validity_period": None,
+            "notes": None,
+        },
     }
 
 
@@ -281,10 +289,11 @@ def _ollama_extract_vendor(bid_text: str) -> dict[str, Any]:
         '"domain" is the company domain from email or website (e.g. acme.com). '
         '"representatives" (array of objects: "name", "email", "phone", "designation"). '
         '"bid_summary" (string: 2-4 sentences summarizing the bid content, scope, and key commitments for later evaluation). '
+        '"commercial" (object with proposed pricing: "quoted_price" number or null, "currency" string e.g. USD, "rate" number or null e.g. hourly/unit rate, "rate_unit" string e.g. "per hour", "validity_period" string e.g. "90 days", "notes" string or null for other terms). '
         "Use null for any missing field. Be concise."
     )
     bid_slice = (bid_text or "")[:_EXTRACTION_MAX_LEN]
-    user_content = f"""Bid document text:\n{bid_slice}\n\nReturn only the JSON with "vendor", "representatives", and "bid_summary"."""
+    user_content = f"""Bid document text:\n{bid_slice}\n\nReturn only the JSON with "vendor", "representatives", "bid_summary", and "commercial"."""
 
     messages = [
         {"role": "system", "content": system},
@@ -296,6 +305,8 @@ def _ollama_extract_vendor(bid_text: str) -> dict[str, Any]:
     out = _parse_extraction_json(text)
     if "bid_summary" not in out or not out["bid_summary"]:
         out["bid_summary"] = (bid_text or "")[:800].strip() or None
+    if "commercial" not in out or not isinstance(out.get("commercial"), dict):
+        out["commercial"] = _mock_extract_vendor("").get("commercial", {})
     return out
 
 
