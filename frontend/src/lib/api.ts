@@ -37,6 +37,18 @@ export interface RFPRecord {
   created_at: string | null;
   updated_at: string | null;
   closing_date: string | null;
+  process_type?: string;
+  current_stage?: string;
+  weight_technical?: number;
+  weight_financial?: number;
+  weight_compliance?: number;
+  publish_date?: string | null;
+  qa_deadline?: string | null;
+  submission_deadline?: string | null;
+  review_date?: string | null;
+  decision_date?: string | null;
+  assigned_reviewers?: string[] | null;
+  assigned_approvers?: string[] | null;
 }
 
 export interface RFPCreatePayload {
@@ -44,6 +56,17 @@ export interface RFPCreatePayload {
   description: string;
   requirements: string;
   budget?: number | null;
+  process_type?: string;
+  weight_technical?: number;
+  weight_financial?: number;
+  weight_compliance?: number;
+  publish_date?: string | null;
+  qa_deadline?: string | null;
+  submission_deadline?: string | null;
+  review_date?: string | null;
+  decision_date?: string | null;
+  assigned_reviewers?: string[] | null;
+  assigned_approvers?: string[] | null;
 }
 
 export async function fetchRFPs(): Promise<RFPRecord[]> {
@@ -71,6 +94,22 @@ export async function fetchRFP(id: number): Promise<RFPRecord> {
   return res.json();
 }
 
+export async function updateRFP(
+  id: number,
+  payload: { current_stage?: string; [key: string]: unknown }
+): Promise<RFPRecord> {
+  const res = await fetch(`${API_BASE}/rfps/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to update RFP");
+  }
+  return res.json();
+}
+
 export async function lockRfpBids(rfpId: number): Promise<RFPRecord> {
   const res = await fetch(`${API_BASE}/rfps/${rfpId}/lock`, { method: "PATCH" });
   if (!res.ok) {
@@ -83,6 +122,49 @@ export async function lockRfpBids(rfpId: number): Promise<RFPRecord> {
 export async function fetchComparativeAnalysis(rfpId: number): Promise<ComparativeBidRow[]> {
   const res = await fetch(`${API_BASE}/rfps/${rfpId}/comparative`);
   if (!res.ok) throw new Error("Failed to fetch comparative analysis");
+  return res.json();
+}
+
+// --- Vendor Q&A (RFP) ---
+export interface VendorQARecord {
+  id: number;
+  rfp_id: number;
+  vendor_name: string;
+  question: string;
+  answer: string | null;
+  status: string;
+  created_at: string | null;
+}
+
+export async function fetchRFPQA(rfpId: number): Promise<VendorQARecord[]> {
+  const res = await fetch(`${API_BASE}/rfps/${rfpId}/qa`);
+  if (!res.ok) throw new Error("Failed to fetch Q&A");
+  return res.json();
+}
+
+export async function createRFPQA(rfpId: number, payload: { vendor_name: string; question: string }): Promise<VendorQARecord> {
+  const res = await fetch(`${API_BASE}/rfps/${rfpId}/qa`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to submit question");
+  }
+  return res.json();
+}
+
+export async function answerQA(qaId: number, answer: string): Promise<VendorQARecord> {
+  const res = await fetch(`${API_BASE}/qa/${qaId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ answer }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to answer");
+  }
   return res.json();
 }
 

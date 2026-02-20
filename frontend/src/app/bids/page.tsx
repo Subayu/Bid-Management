@@ -253,7 +253,9 @@ export default function BidsPage() {
                               ? "bg-red-100 text-red-800"
                               : bid.status === "Evaluated"
                                 ? "bg-indigo-100 text-indigo-800"
-                                : "bg-slate-100 text-slate-700"
+                                : bid.status === "Draft" || bid.status === "Uploaded"
+                                  ? "bg-amber-50 text-amber-800"
+                                  : "bg-slate-100 text-slate-700"
                         }`}
                       >
                         {bid.status}

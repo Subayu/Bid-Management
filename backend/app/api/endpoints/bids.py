@@ -48,6 +48,8 @@ router = APIRouter(tags=["bids"])
 logger = logging.getLogger(__name__)
 
 FINAL_BID_STATUSES = ("Approved", "Rejected")
+# Bids in these statuses are editable (human review, annotations, re-eval); Draft and Uploaded are pre-evaluation.
+EDITABLE_BID_STATUSES = ("Draft", "Uploaded", "Evaluated")
 VENDOR_EXTRACT_PLACEHOLDER = "Processing…"
 
 
@@ -141,7 +143,7 @@ async def upload_bid(
         extracted_text=text or None,
         text_chunks=text_chunks_json,
         vendor_name=VENDOR_EXTRACT_PLACEHOLDER,
-        status="Uploaded",
+        status="Draft",
     )
     db.add(bid)
     db.commit()
@@ -276,7 +278,7 @@ def get_bid(bid_id: int, response: Response, db: Session = Depends(get_db)):
 
 
 def _ensure_bid_editable(bid: Bid, rfp: RFP) -> None:
-    """Raise 400 if RFP is locked or bid is in final state."""
+    """Raise 400 if RFP is locked or bid is in final state. Draft, Uploaded, and Evaluated bids are editable."""
     if getattr(rfp, "bids_locked", False):
         raise HTTPException(status_code=400, detail="Bids are locked for final decision; no edits or re-evaluation allowed.")
     if bid.status in FINAL_BID_STATUSES:

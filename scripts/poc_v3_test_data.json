@@ -1,0 +1,30 @@
+{
+  "base_url": "http://localhost:8001",
+  "created_at": "2026-02-20T02:58:48.564252Z",
+  "rfps": [
+    {
+      "id": 1,
+      "title": "POC v3 Test RFP \u2014 IT Services",
+      "note": "Has Q&A; use for Publish + Timeline + Q&A tests"
+    },
+    {
+      "id": 2,
+      "title": "POC v3 Test RFP \u2014 RFI to RFP",
+      "note": "RFI -> RFP; use for wizard/display tests"
+    }
+  ],
+  "qa": [
+    {
+      "id": 1,
+      "rfp_id": 1
+    },
+    {
+      "id": 2,
+      "rfp_id": 1
+    },
+    {
+      "id": 3,
+      "rfp_id": 1
+    }
+  ]
+}

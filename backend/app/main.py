@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from app.database import engine
 from app.models.base import Base
 import app.models  # noqa: F401 - register BidAuditEvent etc. for create_all
-from app.api.endpoints import admin, rfps, bids
+from app.api.endpoints import admin, rfps, bids, qa
 from app.services.file_service import ensure_upload_dir
 
 UPLOAD_DIR = Path("/app/data/uploads")
@@ -41,6 +41,7 @@ app.add_middleware(
 
 app.include_router(admin.router)
 app.include_router(rfps.router)
+app.include_router(qa.router)
 app.include_router(bids.router)
 
 

@@ -25,4 +25,18 @@ class RFP(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     closing_date = Column(DateTime(timezone=True), nullable=True)
 
+    # Workflow (POC v3)
+    process_type = Column(String(50), default="Direct RFP", nullable=False)  # "Direct RFP" | "RFI -> RFP"
+    current_stage = Column(String(50), default="Draft", nullable=False)  # "Draft" | "Published" | etc.
+    weight_technical = Column(Float, default=40.0, nullable=False)
+    weight_financial = Column(Float, default=30.0, nullable=False)
+    weight_compliance = Column(Float, default=30.0, nullable=False)
+    publish_date = Column(DateTime(timezone=True), nullable=True)
+    qa_deadline = Column(DateTime(timezone=True), nullable=True)
+    submission_deadline = Column(DateTime(timezone=True), nullable=True)
+    review_date = Column(DateTime(timezone=True), nullable=True)
+    decision_date = Column(DateTime(timezone=True), nullable=True)
+    assigned_reviewers = Column(Text, nullable=True)  # JSON array of names/ids
+    assigned_approvers = Column(Text, nullable=True)  # JSON array of names/ids
+
     bids = relationship("Bid", back_populates="rfp")
