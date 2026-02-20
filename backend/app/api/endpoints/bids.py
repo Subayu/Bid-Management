@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Header, Body, Response
@@ -19,20 +20,29 @@ from app.schemas.bid import (
     BidHumanUpdate,
     BidStatusUpdate,
     BidReEvaluateBody,
+    AnnotationVerifyBody,
     RFPRef,
     BidAuditEventResponse,
     BidEvaluationHistoryResponse,
     VendorResponse,
     VendorRepResponse,
 )
-from app.services.file_service import save_uploaded_file
-from app.services.ocr_service import extract_text_from_pdf
+from pathlib import Path
+
+from app.services.file_service import save_uploaded_file, UPLOAD_DIR
+from app.services.ocr_service import extract_text_from_pdf, extract_text_per_page, correct_annotation_pages
 from app.services.ai_service import (
     evaluate_bid as ai_evaluate_bid,
     evaluate_bid_with_context,
     extract_vendor_and_rep,
 )
-from app.services.digital_agents import verify_website, verify_phone
+from app.services.digital_agents import (
+    verify_website,
+    verify_phone,
+    verify_email,
+    process_annotation_verify_online,
+    process_annotation_email_vendor,
+)
 
 router = APIRouter(tags=["bids"])
 logger = logging.getLogger(__name__)
@@ -86,13 +96,16 @@ def _find_or_create_vendor(db: Session, extraction: dict) -> tuple[Vendor, list[
         db.flush()
         reps = []
         for r in (extraction.get("representatives") or [])[:5]:
+            rep_email = (r.get("email") or "").strip() or None
+            rep_phone = (r.get("phone") or "").strip() or None
             rep = VendorRep(
                 vendor_id=vendor.id,
                 name=(r.get("name") or "").strip() or None,
-                email=(r.get("email") or "").strip() or None,
-                phone=(r.get("phone") or "").strip() or None,
+                email=rep_email,
+                phone=rep_phone,
                 designation=(r.get("designation") or "").strip() or None,
-                phone_verified=verify_phone((r.get("phone") or "").strip() or None) if r.get("phone") else None,
+                phone_verified=verify_phone(rep_phone) if rep_phone else None,
+                email_verified=verify_email(rep_email) if rep_email else None,
             )
             db.add(rep)
             reps.append(rep)
@@ -117,6 +130,8 @@ async def upload_bid(
     relative_path, original_filename, absolute_path = save_uploaded_file(file)
     extracted_text = extract_text_from_pdf(absolute_path)
     text = extracted_text or ""
+    page_texts = extract_text_per_page(absolute_path)
+    text_chunks_json = json.dumps(page_texts) if page_texts else None
 
     bid = Bid(
         rfp_id=rfp_id,
@@ -124,6 +139,7 @@ async def upload_bid(
         filename=original_filename,
         file_path=relative_path,
         extracted_text=text or None,
+        text_chunks=text_chunks_json,
         vendor_name=VENDOR_EXTRACT_PLACEHOLDER,
         status="Uploaded",
     )
@@ -142,19 +158,34 @@ async def extract_vendor(
     actor: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
-    """Extract vendor from bid text and save to bid. Runs in request; returns small JSON so client gets a quick response."""
+    """Extract vendor from bid text and save to bid. Returns vendor payload so the client can show details without refetch."""
     bid = db.query(Bid).filter(Bid.id == bid_id).first()
     if not bid:
         raise HTTPException(status_code=404, detail="Bid not found")
     text = bid.extracted_text or ""
     logger.info("extract-vendor: bid_id=%s, starting", bid_id)
     extraction = await asyncio.to_thread(extract_vendor_and_rep, text)
-    vendor, _ = _find_or_create_vendor(db, extraction)
+    vendor, reps = _find_or_create_vendor(db, extraction)
     bid.vendor_id = vendor.id
     bid.vendor_name = vendor.name
     db.commit()
+    db.refresh(vendor)
+    # Reload vendor with reps for response (relationship may not be loaded)
+    vendor_with_reps = db.query(Vendor).options(joinedload(Vendor.representatives)).filter(Vendor.id == vendor.id).first()
+    if vendor_with_reps:
+        vendor = vendor_with_reps
+    reps = list(vendor.representatives) if vendor.representatives else []
+    vendor_data = VendorResponse(
+        id=vendor.id,
+        name=vendor.name,
+        address=vendor.address,
+        website=vendor.website,
+        domain=vendor.domain,
+        website_verified=vendor.website_verified,
+        representatives=[VendorRepResponse.model_validate(r) for r in reps],
+    )
     logger.info("extract-vendor: bid_id=%s, done vendor_name=%s", bid_id, vendor.name)
-    return {"status": "ok", "bid_id": bid_id, "vendor_name": vendor.name}
+    return {"status": "ok", "bid_id": bid_id, "vendor_name": vendor.name, "vendor": vendor_data}
 
 
 @router.get("/rfps/{rfp_id}/bids", response_model=list[BidResponse])
@@ -193,7 +224,6 @@ def get_bid(bid_id: int, response: Response, db: Session = Depends(get_db)):
     history = sorted(bid.evaluation_history or [], key=lambda h: h.created_at or "", reverse=True)
     vendor_data = None
     if bid.vendor:
-        from app.schemas.bid import VendorResponse, VendorRepResponse
         vendor_data = VendorResponse(
             id=bid.vendor.id,
             name=bid.vendor.name,
@@ -214,7 +244,9 @@ def get_bid(bid_id: int, response: Response, db: Session = Depends(get_db)):
         ai_score=bid.ai_score,
         ai_reasoning=bid.ai_reasoning,
         ai_evaluation_source=bid.ai_evaluation_source,
+        last_eval_duration_seconds=getattr(bid, "last_eval_duration_seconds", None),
         ai_requirements_breakdown=bid.ai_requirements_breakdown,
+        ai_annotations=getattr(bid, "ai_annotations", None),
         human_score=bid.human_score,
         human_notes=bid.human_notes,
         created_at=bid.created_at,
@@ -223,6 +255,13 @@ def get_bid(bid_id: int, response: Response, db: Session = Depends(get_db)):
         vendor=vendor_data,
         audit_events=[BidAuditEventResponse.model_validate(e) for e in events],
         evaluation_history=[BidEvaluationHistoryResponse.model_validate(h) for h in history],
+    )
+    logger.info(
+        "get_bid: bid_id=%s vendor_id=%s has_vendor=%s last_eval_duration_seconds=%s",
+        bid_id,
+        getattr(bid, "vendor_id", None),
+        vendor_data is not None,
+        getattr(bid, "last_eval_duration_seconds", None),
     )
 
 
@@ -261,6 +300,7 @@ async def evaluate_bid_endpoint(
                 text_chunks = None
         except Exception:
             text_chunks = None
+    t0 = time.perf_counter()
     result = await asyncio.to_thread(
         ai_evaluate_bid,
         rfp_text.strip(),
@@ -268,6 +308,7 @@ async def evaluate_bid_endpoint(
         evaluation_summary=getattr(bid, "evaluation_summary", None) or None,
         text_chunks=text_chunks,
     )
+    elapsed = time.perf_counter() - t0
     score = result.get("score")
     reasoning = result.get("reasoning")
     if score is not None:
@@ -276,8 +317,22 @@ async def evaluate_bid_endpoint(
         bid.ai_reasoning = str(reasoning)
     if result.get("evaluation_source"):
         bid.ai_evaluation_source = str(result["evaluation_source"])
+    bid.last_eval_duration_seconds = round(elapsed, 2)
     if "requirements_breakdown" in result and result["requirements_breakdown"]:
         bid.ai_requirements_breakdown = json.dumps(result["requirements_breakdown"])
+    if "annotations" in result and result["annotations"]:
+        page_texts = text_chunks
+        if not page_texts and bid.file_path:
+            try:
+                abs_path = UPLOAD_DIR / Path(bid.file_path).name
+                if abs_path.exists():
+                    page_texts = extract_text_per_page(str(abs_path))
+            except Exception:
+                page_texts = []
+        annotations = correct_annotation_pages(result["annotations"], page_texts or [])
+        bid.ai_annotations = json.dumps(annotations)
+    else:
+        bid.ai_annotations = None
     bid.status = "Evaluated"
     db.commit()
     db.refresh(bid)
@@ -325,7 +380,23 @@ async def re_evaluate_bid_endpoint(
                 text_chunks = None
         except Exception:
             text_chunks = None
-    human_notes_context = (body and body.human_notes_context) or bid.human_notes
+    human_notes_context = (body and body.human_notes_context) or bid.human_notes or ""
+    human_notes_context = (human_notes_context or "").strip()
+    # Include reviewer notes from each annotation so re-evaluation gets full context
+    try:
+        existing_annotations = json.loads(bid.ai_annotations) if bid.ai_annotations else []
+        if isinstance(existing_annotations, list):
+            annotation_notes = [
+                (a.get("reviewer_notes") or "").strip()
+                for a in existing_annotations
+                if isinstance(a, dict) and (a.get("reviewer_notes") or "").strip()
+            ]
+            if annotation_notes:
+                human_notes_context += "\n\nAnnotation notes from reviewer:\n" + "\n".join(f"- {n}" for n in annotation_notes)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    human_notes_context = human_notes_context.strip() or None
+    t0 = time.perf_counter()
     result = await asyncio.to_thread(
         evaluate_bid_with_context,
         rfp_text.strip(),
@@ -334,6 +405,7 @@ async def re_evaluate_bid_endpoint(
         evaluation_summary=getattr(bid, "evaluation_summary", None) or None,
         text_chunks=text_chunks,
     )
+    elapsed = time.perf_counter() - t0
     score = result.get("score")
     reasoning = result.get("reasoning")
     if score is not None:
@@ -342,8 +414,38 @@ async def re_evaluate_bid_endpoint(
         bid.ai_reasoning = str(reasoning)
     if result.get("evaluation_source"):
         bid.ai_evaluation_source = str(result["evaluation_source"])
+    bid.last_eval_duration_seconds = round(elapsed, 2)
     if "requirements_breakdown" in result and result["requirements_breakdown"]:
         bid.ai_requirements_breakdown = json.dumps(result["requirements_breakdown"])
+    if "annotations" in result and result["annotations"]:
+        page_texts = text_chunks
+        if not page_texts and bid.file_path:
+            try:
+                abs_path = UPLOAD_DIR / Path(bid.file_path).name
+                if abs_path.exists():
+                    page_texts = extract_text_per_page(str(abs_path))
+            except Exception:
+                page_texts = []
+        new_ann = correct_annotation_pages(result["annotations"], page_texts or [])
+        try:
+            old_ann = json.loads(bid.ai_annotations) if bid.ai_annotations else []
+            if isinstance(old_ann, list):
+                for i, na in enumerate(new_ann):
+                    if isinstance(na, dict) and i < len(old_ann) and isinstance(old_ann[i], dict):
+                        oa = old_ann[i]
+                        if (oa.get("reviewer_notes") or "").strip():
+                            na["reviewer_notes"] = oa.get("reviewer_notes")
+                        if oa.get("verification_status"):
+                            na["verification_status"] = oa.get("verification_status")
+                        if (oa.get("verification_note") or "").strip():
+                            na["verification_note"] = oa.get("verification_note")
+                        if na.get("page") is None and oa.get("page") is not None:
+                            na["page"] = oa.get("page")
+        except (json.JSONDecodeError, TypeError):
+            pass
+        bid.ai_annotations = json.dumps(new_ann)
+    else:
+        bid.ai_annotations = None
     bid.status = "Evaluated"
     db.commit()
     db.refresh(bid)
@@ -360,7 +462,7 @@ def update_bid_human(
     x_persona: str | None = Header(None, alias="X-Persona"),
     db: Session = Depends(get_db),
 ):
-    """Update human reviewer score and notes. Rejected when RFP bids locked or bid is Approved/Rejected."""
+    """Update human reviewer score, notes, and/or annotation notes. Rejected when RFP bids locked or bid is Approved/Rejected."""
     bid = db.query(Bid).options(joinedload(Bid.rfp)).filter(Bid.id == bid_id).first()
     if not bid:
         raise HTTPException(status_code=404, detail="Bid not found")
@@ -369,9 +471,67 @@ def update_bid_human(
         bid.human_score = payload.human_score
     if payload.human_notes is not None:
         bid.human_notes = payload.human_notes
+    if payload.ai_annotations is not None:
+        try:
+            arr = json.loads(payload.ai_annotations)
+            if isinstance(arr, list):
+                bid.ai_annotations = payload.ai_annotations
+            else:
+                raise ValueError("ai_annotations must be a JSON array")
+        except (json.JSONDecodeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=f"Invalid ai_annotations: {e}") from e
     db.commit()
     db.refresh(bid)
     db.add(BidAuditEvent(bid_id=bid.id, action="human_review", actor=x_persona or "Reviewer"))
+    db.commit()
+    db.refresh(bid)
+    return bid
+
+
+@router.post("/bids/{bid_id}/annotations/verify", response_model=BidResponse)
+def verify_annotation(
+    bid_id: int,
+    body: AnnotationVerifyBody,
+    db: Session = Depends(get_db),
+):
+    """Run digital agent for an annotation: verify_online or email_vendor. Updates that annotation's verification_status and verification_note."""
+    bid = (
+        db.query(Bid)
+        .options(joinedload(Bid.rfp), joinedload(Bid.vendor).joinedload(Vendor.representatives))
+        .filter(Bid.id == bid_id)
+        .first()
+    )
+    if not bid:
+        raise HTTPException(status_code=404, detail="Bid not found")
+    _ensure_bid_editable(bid, bid.rfp)
+    annotations = []
+    if bid.ai_annotations:
+        try:
+            annotations = json.loads(bid.ai_annotations)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid ai_annotations JSON") from None
+    if not isinstance(annotations, list):
+        raise HTTPException(status_code=400, detail="ai_annotations must be an array")
+    idx = body.index
+    if idx < 0 or idx >= len(annotations):
+        raise HTTPException(status_code=400, detail="Annotation index out of range")
+    ann = annotations[idx]
+    if not isinstance(ann, dict):
+        ann = {}
+    if body.action == "verify_online":
+        result = process_annotation_verify_online(ann)
+    else:
+        vendor_email = None
+        if bid.vendor and bid.vendor.representatives:
+            for rep in bid.vendor.representatives:
+                if rep.email and str(rep.email).strip():
+                    vendor_email = str(rep.email).strip()
+                    break
+        result = process_annotation_email_vendor(ann, vendor_email)
+    ann["verification_status"] = result.get("status", "pending")
+    ann["verification_note"] = result.get("note", "")
+    annotations[idx] = ann
+    bid.ai_annotations = json.dumps(annotations)
     db.commit()
     db.refresh(bid)
     return bid

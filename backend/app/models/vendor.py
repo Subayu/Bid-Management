@@ -31,6 +31,7 @@ class VendorRep(Base):
     phone = Column(String(64), nullable=True)
     designation = Column(String(255), nullable=True)
     phone_verified = Column(Boolean, nullable=True)  # True=valid format, False=invalid, None=not checked
+    email_verified = Column(Boolean, nullable=True)  # True=valid format, False=invalid, None=not checked
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     vendor = relationship("Vendor", back_populates="representatives")

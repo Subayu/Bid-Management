@@ -1,6 +1,11 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Literal
 from pydantic import BaseModel
+
+
+class AnnotationVerifyBody(BaseModel):
+    index: int  # 0-based index into ai_annotations
+    action: Literal["verify_online", "email_vendor"]
 
 
 class BidAuditEventResponse(BaseModel):
@@ -32,7 +37,9 @@ class BidResponse(BidBase):
     ai_score: Optional[float] = None
     ai_reasoning: Optional[str] = None
     ai_evaluation_source: Optional[str] = None
+    last_eval_duration_seconds: Optional[float] = None
     ai_requirements_breakdown: Optional[str] = None  # JSON string
+    ai_annotations: Optional[str] = None  # JSON array of annotations (quote, reason, reviewer_notes)
     human_score: Optional[float] = None
     human_notes: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -45,6 +52,7 @@ class BidResponse(BidBase):
 class BidHumanUpdate(BaseModel):
     human_score: Optional[float] = None
     human_notes: Optional[str] = None
+    ai_annotations: Optional[str] = None  # JSON array of annotations (may include reviewer_notes, verification_*)
 
 
 class BidStatusUpdate(BaseModel):
@@ -62,6 +70,7 @@ class VendorRepResponse(BaseModel):
     phone: Optional[str] = None
     designation: Optional[str] = None
     phone_verified: Optional[bool] = None
+    email_verified: Optional[bool] = None
 
     class Config:
         from_attributes = True

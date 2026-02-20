@@ -21,7 +21,9 @@ class Bid(Base):
     ai_score = Column(Float, nullable=True)
     ai_reasoning = Column(Text, nullable=True)
     ai_evaluation_source = Column(String(50), nullable=True)  # "ollama" | "mock"
+    last_eval_duration_seconds = Column(Float, nullable=True)  # elapsed time of last AI evaluation
     ai_requirements_breakdown = Column(Text, nullable=True)   # JSON array
+    ai_annotations = Column(Text, nullable=True)  # JSON array of {quote, reason, reviewer_notes?} for areas needing review
     human_score = Column(Float, nullable=True)
     human_notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

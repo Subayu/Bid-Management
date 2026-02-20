@@ -105,7 +105,9 @@ export interface BidRecord {
   ai_score: number | null;
   ai_reasoning: string | null;
   ai_evaluation_source: string | null;
+  last_eval_duration_seconds: number | null;
   ai_requirements_breakdown: string | null;
+  ai_annotations: string | null;
   human_score: number | null;
   human_notes: string | null;
   created_at: string | null;
@@ -134,6 +136,7 @@ export interface VendorRepRecord {
   phone: string | null;
   designation: string | null;
   phone_verified: boolean | null;
+  email_verified: boolean | null;
 }
 
 export interface VendorRecord {
@@ -226,7 +229,11 @@ export async function reEvaluateBid(
 
 export async function updateBidHuman(
   id: number,
-  payload: { human_score?: number | null; human_notes?: string | null },
+  payload: {
+    human_score?: number | null;
+    human_notes?: string | null;
+    ai_annotations?: string | null;
+  },
   persona?: string
 ): Promise<BidRecord> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -239,6 +246,27 @@ export async function updateBidHuman(
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to update bid");
+  }
+  return res.json();
+}
+
+/** Run digital agent for an annotation: verify_online or email_vendor. Updates that annotation on the bid. */
+export async function verifyAnnotation(
+  bidId: number,
+  index: number,
+  action: "verify_online" | "email_vendor",
+  persona?: string
+): Promise<BidRecord> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (persona) headers["X-Persona"] = persona;
+  const res = await fetch(`${API_BASE}/bids/${bidId}/annotations/verify`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ index, action }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to verify annotation");
   }
   return res.json();
 }
@@ -295,9 +323,12 @@ export const VENDOR_EXTRACT_PLACEHOLDER = "Processing…";
 
 /**
  * Run vendor extraction on the bid (sync on server). Returns when done.
- * Backend returns small JSON so the request completes quickly after extraction.
+ * Backend returns vendor payload so the client can show details without refetch.
  */
-export async function extractVendor(bidId: number, actor?: string): Promise<{ status: string; bid_id: number; vendor_name: string }> {
+export async function extractVendor(
+  bidId: number,
+  actor?: string
+): Promise<{ status: string; bid_id: number; vendor_name: string; vendor?: VendorRecord | null }> {
   const form = new FormData();
   if (actor) form.append("actor", actor);
   const res = await fetch(`${API_BASE}/bids/${bidId}/extract-vendor`, {

@@ -69,6 +69,12 @@ ShieldProcure is a **System of Intelligence** for procurement: a bid management 
 - **Lock Bids for Final Decision:** Bid Manager can click this on the RFP page; it sets **RFP.bids_locked = true** (`PATCH /rfps/{id}/lock`). Once locked, reviewers cannot change notes or trigger re-evaluation.
 - **Final bid state:** When an Approver sets a bid to Approved or Rejected, the bid becomes read-only: "Save review", "Run AI evaluation", and "Submit for Re-evaluation" are disabled. The backend rejects PATCH/POST to modify or re-evaluate such bids.
 
+### 6. AI annotations (areas for review)
+
+- **Evaluation annotations:** When the AI evaluates a bid, it returns an **annotations** array: short excerpts from the bid and a **reason** (why each needs further review or verification). Stored as **Bid.ai_annotations** (JSON). Each annotation may include a **page** (1-based) for “Show in document.”
+- **Page correction:** Per-page text is stored at upload (**Bid.text_chunks**, JSON array). After evaluation, annotation page numbers are corrected by searching for each quote in the corresponding page text so “Show in document (page N)” scrolls to the correct page.
+- **UI:** On the bid detail page, an **"Areas for review"** section lists these annotations so reviewers can see what to verify. Reviewers can add notes per annotation, use “Show in document” to scroll the left-pane PDF to that page, and run Verify online / Email vendor. Re-evaluation includes all notes.
+
 ---
 
 ## Phase 1 POC — Requirements
